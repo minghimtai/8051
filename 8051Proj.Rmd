@@ -124,7 +124,7 @@ df_log <- data.frame(rbind(logLik = sapply(models, function(x) round(logLik(x), 
 Df = sapply(models, function(x) attr(logLik(x), "df"))))
 ```
 
-## Predict cost
+## ---- Predict cost ----
 
 ```{r}
 #Attaching data for modeling
@@ -191,7 +191,7 @@ sqrt(mean((test2$pred - test2$claim_cost)^2))
 sqrt(mean((test2$cost_pred - test$claim_cost)^2))
   # Seems OK.
 ```
-## Predict Test Data
+## ---- Predict Test Data ----
 
 ```{r}
 traindata <- df # Full training data.

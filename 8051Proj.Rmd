@@ -1,0 +1,230 @@
+---
+title: "8051Proj"
+author: "Ming-Him Tai"
+date: "11/25/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+install.packages("countreg", repos="http://R-Forge.R-project.org")
+library(ggplot2)
+library(dplyr)
+library(class)
+library(MASS)
+library(caret)
+library(devtools)
+library(countreg)
+library(forcats)
+library(AER)
+library(pscl)
+library(Hmisc)
+```
+
+
+## ----Predict Count----
+
+```{r}
+
+#Attaching data for modeling
+data1 <- read.csv("train.csv")
+
+#Data Cleaning & Pre-processing
+data2 <- unique(data1)
+data3 <- data2[data2$veh_value > quantile(data2$veh_value, 0.0001),] 
+data4 <- data3[data3$veh_value < quantile(data3$veh_value, 0.999), ]
+
+#Regrouping vehicle categories
+top9 <- c('SEDAN','HBACK','STNWG','UTE','TRUCK','HDTOP','COUPE','PANVN','MIBUS')
+data4$veh_body <- fct_other(data4$veh_body, keep = top9, other_level = 'other')
+
+#Converting catagorical variables into factors
+names <- c('veh_body' ,'veh_age','gender','area','dr_age')
+data4[,names] <- lapply(data4[,names] , factor)
+str(data4)
+
+##data partition - re-sampled data
+data <- data4
+data_partition <- createDataPartition(data$claim_count, times = 1,p = 0.8,list = FALSE)
+str(data_partition)
+training <- data[data_partition,]
+testing  <- data[-data_partition,]
+
+#Poisson model with offset
+poissonglm <- glm(claim_count ~veh_value+veh_body+veh_age+gender+ area+ dr_age,data=training, family = "poisson", offset=log(exposure))
+summary(poissonglm)
+
+# Test for dispersion
+dispersiontest(poissonglm,trafo=1)
+
+#Quasipoisson model with weight
+qpoissonglm <- glm(claim_count/exposure ~ veh_value+veh_body+veh_age+ gender+ area+dr_age,data=training, family = "quasipoisson",weight = exposure)
+summary(qpoissonglm)
+
+#Negative Binomial model with offset
+nbglm <- glm.nb(claim_count ~ veh_value+veh_body+veh_age+gender+ area+dr_age,data=training, offset=log(exposure),control = glm.control(maxit=10000))
+summary(nbglm)
+
+#Zero Inflation Poisson model with offset
+zip <- zeroinfl(claim_count~ veh_value+veh_body+veh_age+gender+ area+ dr_age|veh_value+veh_body+veh_age+gender+area+dr_age,offset=log(exposure),data=training,dist = "poisson",link= "logit")
+summary(zip)
+
+#Zero Inflation Negative Binomial model with offset
+zinb <- zeroinfl(claim_count~veh_value+veh_body+veh_age+gender+area+ dr_age|veh_value+veh_body+veh_age+gender+area+dr_age,offset=log(exposure),data=training,dist = "negbin",link= "logit")
+summary(zinb)
+
+#Hurdle Negative Binomial model with offset
+hurdlenb <- hurdle(claim_count~veh_value+veh_body+veh_age+gender+area+ dr_age|veh_value+veh_body+veh_age+gender+area+dr_age,offset=log(exposure),data=training,dist ="negbin",zero.dist = "negbin",link= "logit")
+summary(hurdlenb)
+
+#Hurdle Poisson model with offset
+hurdlepoisson <- hurdle(claim_count~veh_value+veh_body+veh_age+gender+ area+ dr_age|veh_value+veh_body+veh_age+gender+area+dr_age, offset=log(exposure),data=training,dist ="poisson",zero.dist = "poisson",link= "logit")
+summary(hurdlepoisson)
+
+#Save models
+save(poissonglm, file = "poissonglm.rda")
+save(nbglm, file = "nbglm.rda")
+save(zinb, file = "zinb.rda")
+save(zip, file = "zip.rda")
+save(hurdlepoisson, file = "hurdlepoisson.rda")
+save(hurdlenb, file = "hurdlenb.rda")
+
+#Load Models
+load("poissonglm.rda")
+load("nbglm.rda")
+load("zinb.rda")
+load("zip.rda")
+load("hurdlepoisson.rda")
+load("hurdlenb.rda")
+
+# Codes to predict zero claims:
+zero_counts <- data.frame(round(c("Obs" = sum(training$claim_count < 1),"poissonglm" = sum(exp(-predict(poissonglm, training, type = "response"))),"nbglm" = sum(dnbinom(0, mu = fitted(nbglm), size = nbglm$theta)),"hurdlepoisson" = sum(predict(hurdlepoisson, training, type = "prob")[,1]),"hurdlenb" = sum(predict(hurdlenb, training,type = "prob")[,1]),"zip" = sum(predict(zip, training,type = "prob")[,1]),"zinb" = sum(predict(zinb, training,type = "prob")[,1]))))
+
+# Installing and running rootogram
+library(countreg)
+
+par(mfrow = c(1, 2))
+rootogram(poissonglm,max = 10,main="Poisson") # fit up to count 10
+rootogram(nbglm,max = 10,main="NB") # fit up to count 10
+par(mfrow = c(1, 2))
+rootogram(zip,max = 10,main="ZIP") # fit up to count 10
+rootogram(zinb,max = 10,main="ZINB") # fit up to count 10
+par(mfrow = c(1, 2))
+rootogram(hurdlepoisson,max = 10,main="Hurdle-P")# fit up to count 10
+rootogram(hurdlenb,max = 10,main="Hurdle-NB") # fit up to count 10
+par(mfrow = c(1, 1))
+
+#Log likelyhood for all the models
+models <- list("Pois" = poissonglm, "NB" = nbglm, "ZIP-POI" = zip,"ZIP-NB" = zinb,"Hurdle-POI" = hurdlepoisson,"Hurdle-NB" = hurdlenb)
+
+df_log <- data.frame(rbind(logLik = sapply(models, function(x) round(logLik(x), digits = 0)),
+Df = sapply(models, function(x) attr(logLik(x), "df"))))
+```
+
+## Predict cost
+
+```{r}
+#Attaching data for modeling
+
+data1 <- read.csv("train.csv")
+
+#Data Cleaning & Pre-processing
+data1$veh_value_cat <- as.numeric(cut2(data1$veh_value, g=5))
+data2 <- unique(data1)
+data3 <- data2[data2$veh_value > quantile(data2$veh_value, 0.0001), ] 
+#data4 <- data3[data3$veh_value < quantile(data3$veh_value, 0.999), ]
+#Regrouping vehicle categories
+top9 <-c('SEDAN','HBACK','STNWG','UTE','TRUCK','HDTOP','COUPE','PANVN','MIBUS')
+data3$veh_body <- fct_other(data3$veh_body, keep = top9, other_level = 'other')
+#Converting catagorical variables into factors
+names <- c('veh_body' ,'veh_age','gender','area','dr_age','veh_value_cat')
+data3[,names] <- lapply(data3[,names] , factor)
+str(data3)
+
+newdata <- subset(data3, claim_ind ==1)
+df <- newdata[newdata$claim_cost < quantile(newdata$claim_cost, 0.99), ]
+
+##data partition - original data
+data_partition <- createDataPartition(df$claim_cost, times = 1,p = 0.8,list = FALSE)
+str(data_partition)
+train <- df[data_partition,]
+test  <- df[-data_partition,]
+
+#models - Gaussian
+model_gauss <- glm(claim_cost ~ veh_value+veh_body+veh_age+gender+area+dr_age,
+                  data = train,offset = log(claim_count),family=gaussian(link="log"))
+summary(model_gauss)
+plot(model_gauss)
+test$pred <- predict(model_gauss, newdata=test, type="response")
+sqrt(mean((test$pred - test$claim_cost)^2))
+write.csv(test,"test_gauss.csv")
+
+# Models - Gamma
+model_gamma <- glm(claim_cost ~ veh_value+veh_body+veh_age+gender+area+dr_age,
+                  data = train,offset = log(claim_count),family=Gamma(link="log"))
+summary(model_gamma)
+plot(model_gamma)
+test$pred <- predict(model_gamma, newdata=test, type="response")
+sqrt(mean((test$pred - test$claim_cost)^2))
+write.csv(test,"test_gamma.csv")
+```
+
+## ---- Verification ----
+
+```{r}
+#Poisson model with offset
+poissonglm.pred.trial <- glm(claim_count ~veh_value+veh_body+veh_age+gender+ area+ dr_age,data=train, family = "poisson", offset=log(exposure))
+
+# Predict count
+test2 <- test
+test2$claim_count <- predict(poissonglm.pred.trial, newdata = test2, type = "response") 
+  # Warning: overriding the original claim_count data
+
+# Predict cost
+test2$cost_pred <- predict(model_gamma, newdata = test2, type = "response")
+
+#RMSE
+sqrt(mean((test2$pred - test2$claim_cost)^2))
+sqrt(mean((test2$cost_pred - test$claim_cost)^2))
+  # Seems OK.
+```
+## Predict Test Data
+
+```{r}
+traindata <- df # Full training data.
+
+testdata <- read.csv("test.csv")
+
+#Data Cleaning & Pre-processing
+testdata$veh_value_cat <- as.numeric(cut2(testdata$veh_value, g=5))
+
+#Regrouping vehicle categories
+top9 <-c('SEDAN','HBACK','STNWG','UTE','TRUCK','HDTOP','COUPE','PANVN','MIBUS')
+testdata$veh_body <- fct_other(testdata$veh_body, keep = top9, other_level = 'other')
+
+#Converting categorical variables into factors
+names <- c('veh_body' ,'veh_age','gender','area','dr_age','veh_value_cat')
+testdata[ ,names] <- lapply(testdata[,names] , factor)
+
+testdata.dup <- testdata
+
+## Predict count 
+# Update poissonglm with the full training dataset
+poissonglm.pred <- glm(claim_count ~veh_value+veh_body+veh_age+gender+ area+ dr_age,data=traindata, family = "poisson", offset=log(exposure)) 
+
+testdata.dup$claim_count <- predict(poissonglm.pred, newdata = testdata.dup, type = "response")
+
+## Predict cost
+# Update model_gamma with the full training dataset
+model_gamma.pred <- glm(claim_cost ~ veh_value+veh_body+veh_age+gender+area+dr_age,
+                  data = traindata,offset = log(claim_count),family=Gamma(link="log"))
+
+testdata.dup$claim_cost <- predict(model_gamma.pred, newdata = testdata.dup, type = "response")
+
+write.csv(testdata.dup$claim_cost, "submit.csv")
+
+```
+
